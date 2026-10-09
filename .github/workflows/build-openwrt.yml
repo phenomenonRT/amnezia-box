@@ -1,23 +1,25 @@
 # Сборка amnezia-box (sing-box + AmneziaWG) под OpenWrt.
-# Положите файл в .github/workflows/ своего репозитория (не форка hoaxisr),
-# запустите вручную: Actions → build-openwrt → Run workflow.
+# Версия берётся из исходников: по умолчанию — последний релиз репозитория-источника,
+# тег релиза здесь совпадает с ним. Запуск: вручную или раз в сутки по расписанию
+# (если релиз с таким тегом уже есть — сборка пропускается).
 # Бинарники статические (CGO=0), без зависимостей от libc: работают на любой OpenWrt (musl).
 name: build-openwrt
 
 on:
+  schedule:
+    - cron: "17 */8 * * *"
   workflow_dispatch:
     inputs:
       source_repo:
         description: "Репозиторий с исходниками"
         default: "hoaxisr/amnezia-box"
-        required: true
       source_ref:
-        description: "Ветка или тег исходников (например awg-1.14.1)"
-        default: "awg-1.14.1"
-        required: true
-      release_tag:
-        description: "Тег релиза в этом репозитории (например 1.14.1-awg)"
-        required: true
+        description: "Ветка или тег исходников (пусто = последний релиз источника)"
+        default: ""
+      force:
+        description: "Пересобрать, даже если релиз с таким тегом уже есть"
+        type: boolean
+        default: false
       upx:
         description: "Дополнительно собрать сжатые UPX-версии (-upx)"
         type: boolean
@@ -27,7 +29,36 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      repo: ${{ steps.r.outputs.repo }}
+      ref: ${{ steps.r.outputs.ref }}
+      skip: ${{ steps.r.outputs.skip }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_REPO: ${{ inputs.source_repo }}
+          IN_REF: ${{ inputs.source_ref }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          REPO="${IN_REPO:-hoaxisr/amnezia-box}"
+          REF="${IN_REF:-}"
+          if [ -z "$REF" ]; then
+            REF="$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            [ -n "$REF" ] || REF="$(gh api "repos/$REPO/releases?per_page=1" --jq '.[0].tag_name')"
+          fi
+          [ -n "$REF" ] && [ "$REF" != null ] || { echo "Не удалось определить версию исходников в $REPO" >&2; exit 1; }
+          SKIP=false
+          if [ "$FORCE" != true ] && gh release view "$REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then SKIP=true; fi
+          echo "Источник: $REPO @ $REF (пропуск: $SKIP)"
+          { echo "repo=$REPO"; echo "ref=$REF"; echo "skip=$SKIP"; } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -44,8 +75,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.source_repo }}
-          ref: ${{ inputs.source_ref }}
+          repository: ${{ needs.prepare.outputs.repo }}
+          ref: ${{ needs.prepare.outputs.ref }}
           path: src
 
       - uses: actions/setup-go@v5
@@ -56,7 +87,7 @@ jobs:
         working-directory: src
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.release_tag }}"
+          VERSION="${{ needs.prepare.outputs.ref }}"
           TAGS="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_awg,with_low_memory"
           echo "Build tags: $TAGS"
           export CGO_ENABLED=0 GOOS=linux GOARCH="${{ matrix.goarch }}"
@@ -88,7 +119,7 @@ jobs:
           path: dist/*
 
   release:
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -98,9 +129,10 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag }}
+          TAG: ${{ needs.prepare.outputs.ref }}
+          SRC: ${{ needs.prepare.outputs.repo }}
         run: |
           set -euo pipefail
-          NOTES="amnezia-box (sing-box + AWG), статические сборки для OpenWrt. Исходники: ${{ inputs.source_repo }}@${{ inputs.source_ref }}"
+          NOTES="amnezia-box (sing-box + AWG), статические сборки для OpenWrt. Исходники: $SRC@$TAG"
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "$NOTES" --latest \
             || gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
