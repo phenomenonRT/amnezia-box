@@ -10,7 +10,7 @@
 #   VERSION=tag       конкретный тег релиза (по умолчанию latest)
 #   BIN_URL=https://… прямая ссылка на бинарник (вместо REPO)
 #   BIN_DIR=/usr/bin  куда класть бинарник (при нехватке флеша: каталог на USB)
-#   UPX=1             брать сжатую сборку (-upx); займёт больше ОЗУ при запуске
+#   PLAIN=1           взять несжатую сборку (по умолчанию — сжатая UPX; несжатая меньше занимает ОЗУ)
 #   BASE_URL=https://…  зеркало вместо github.com (путь как у GitHub Releases)
 #   AUTOSTART=1       запустить службу сразу, если конфиг уже есть
 REPO="${REPO:-phenomenonRT/amnezia-box}"
@@ -63,7 +63,7 @@ if [ -n "$SRC" ]; then
   cp "$SRC" "$TMP/$NAME"
 else
   ASSET="$NAME-linux-$GRP"
-  [ "${UPX:-0}" = 1 ] && ASSET="$ASSET-upx"
+  [ "${PLAIN:-0}" = 1 ] && ASSET="$ASSET-plain"
   if [ -n "${BIN_URL:-}" ]; then
     URL="$BIN_URL"
   else

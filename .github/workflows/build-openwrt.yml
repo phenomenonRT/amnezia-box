@@ -3,6 +3,8 @@
 # можно указать несколько тегов через запятую (например, 1.15.0-alpha.6-awgm.24,1.15.0-alpha.6-awgm.25).
 # Тег релиза здесь совпадает с тегом исходников. Если релиз с таким тегом уже есть, версия пропускается.
 # Бинарники статические (CGO=0), без зависимостей от libc: работают на OpenWrt 24.10 и 25.x.
+# Основной файл amnezia-box-linux-<arch> сжат UPX (-9 --lzma), как в rndnaame/awg-compressed;
+# рядом лежит несжатый amnezia-box-linux-<arch>-plain (меньше ОЗУ при запуске).
 name: build-openwrt
 
 on:
@@ -18,10 +20,6 @@ on:
         default: ""
       force:
         description: "Пересобрать, даже если релиз с таким тегом уже есть"
-        type: boolean
-        default: false
-      upx:
-        description: "Дополнительно собрать сжатые UPX-версии (-upx)"
         type: boolean
         default: false
 
@@ -101,19 +99,25 @@ jobs:
           [ -n "${{ matrix.gomips }}" ] && export GOMIPS="${{ matrix.gomips }}"
           [ -n "${{ matrix.goarm }}" ]  && export GOARM="${{ matrix.goarm }}"
           mkdir -p ../dist
-          OUT="../dist/amnezia-box-linux-${{ matrix.arch }}"
+          OUT="../dist/amnezia-box-linux-${{ matrix.arch }}-plain"
           go build -trimpath -tags "$TAGS" \
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$VERSION' $(cat release/LDFLAGS) -s -w -buildid=" \
             -o "$OUT" ./cmd/sing-box
           file "$OUT"; ls -lh "$OUT"
 
-      - name: UPX (необязательно)
-        if: ${{ inputs.upx }}
+      - name: UPX
+        working-directory: dist
         run: |
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y --no-install-recommends upx-ucl
-          cp dist/amnezia-box-linux-${{ matrix.arch }} dist/amnezia-box-linux-${{ matrix.arch }}-upx
-          upx -9 --lzma dist/amnezia-box-linux-${{ matrix.arch }}-upx || rm -f dist/amnezia-box-linux-${{ matrix.arch }}-upx
+          A="amnezia-box-linux-${{ matrix.arch }}"
+          cp "$A-plain" "$A"
+          if timeout 1200 upx -9 --lzma "$A" && upx -t "$A"; then
+            ls -lh "$A-plain" "$A"
+          else
+            echo "::warning::UPX не справился для ${{ matrix.arch }}, основной файл остаётся несжатым"
+            cp "$A-plain" "$A"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
