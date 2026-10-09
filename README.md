@@ -20,7 +20,7 @@ amnezia-box check -c /etc/amnezia-box/config.json
 
 Переменные: `VERSION` (тег релиза, например `1.15.0-alpha.6-awgm.24`), `BIN_DIR` (например, каталог на USB), `PLAIN=1` (несжатая сборка вместо сжатой), `BASE_URL` (зеркало GitHub), `BIN_URL` (прямая ссылка). Установка из файла: `sh install-openwrt.sh /tmp/amnezia-box`. Удаление: `sh install-openwrt.sh uninstall`.
 
-## Установка пакетом (.ipk)
+## Установка пакетом (.ipk для 24.10, .apk для 25.x)
 
 В релизе рядом с бинарниками лежит `amnezia-box_<версия>_<группа>.ipk` (внутри сжатый бинарник и init-скрипт). Его можно загрузить через LuCI (System → Software → Upload Package) или поставить так: `opkg install /tmp/amnezia-box_*.ipk`. Группа выбирается по архитектуре (`cat /etc/openwrt_release | grep ARCH`):
 
@@ -32,7 +32,11 @@ amnezia-box check -c /etc/amnezia-box/config.json
 | `arm_cortex-a5/a7/a8/a9/a15*` | `armv7` |
 | остальные `arm_*` | `armv5` |
 
-Пакет объявлен как `Architecture: all`, поэтому `opkg` не отвергнет файл не той группы, выбирайте внимательно. `.ipk` рассчитан на `opkg` (OpenWrt 24.10); для OpenWrt 25.x с `apk` используйте скрипт `install-openwrt.sh`. Сами файлы без расширения (`amnezia-box-linux-*`) пакетами не являются, их нельзя загружать как пакет.
+Пакет объявлен как `Architecture: all`, поэтому `opkg` не отвергнет файл не той группы, выбирайте внимательно. **OpenWrt 24.10 (opkg):** `amnezia-box_<версия>_<группа>.ipk`, через LuCI или `opkg install /tmp/amnezia-box_*.ipk`.
+
+**OpenWrt 25.x (apk):** `amnezia-box_<версия>_<группа>.apk` (версия записана в формате apk, например `1.15.0_alpha10_p31` для `1.15.0-alpha.10-awgm.31`), через LuCI или `apk add --allow-untrusted /tmp/amnezia-box_*.apk`. Пакет не подписан, поэтому нужен `--allow-untrusted`. Сборка `.apk` выполняется отдельным шагом и не проверена на реальном роутере; если шаг не сработал, файла в релизе не будет, тогда используйте `install-openwrt.sh`.
+
+Файлы без расширения (`amnezia-box-linux-*`) пакетами не являются, их нельзя загружать как пакет.
 
 ## Сборка
 

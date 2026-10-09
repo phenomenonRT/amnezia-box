@@ -160,6 +160,44 @@ jobs:
           ( cd "$W" && tar $T -czf "$GITHUB_WORKSPACE/dist/amnezia-box_${VER}_${{ matrix.arch }}.ipk" ./debian-binary ./data.tar.gz ./control.tar.gz )
           tar -tzf "dist/amnezia-box_${VER}_${{ matrix.arch }}.ipk"; ls -lh dist/*.ipk
 
+      - name: APK (OpenWrt 25.x)
+        continue-on-error: true   # неудача не мешает бинарникам и .ipk попасть в релиз
+        run: |
+          set -euo pipefail
+          VER="${{ matrix.ref }}"
+          A="amnezia-box-linux-${{ matrix.arch }}"
+          # версия в формате apk: 1.15.0-alpha.10-awgm.31 -> 1.15.0_alpha10_p31
+          if [[ "$VER" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-(alpha|beta|rc)\.([0-9]+))?(-awgm\.([0-9]+))?$ ]]; then
+            APKV="${BASH_REMATCH[1]}"
+            [ -z "${BASH_REMATCH[3]}" ] || APKV="${APKV}_${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
+            [ -z "${BASH_REMATCH[6]}" ] || APKV="${APKV}_p${BASH_REMATCH[6]}"
+          else
+            echo "Версию $VER нельзя записать в формате apk, пропуск" >&2; exit 1
+          fi
+          W="$(mktemp -d)"
+          mkdir -p "$W/files/usr/bin" "$W/files/etc/init.d" "$W/files/lib/upgrade/keep.d"
+          install -m 0755 "dist/$A" "$W/files/usr/bin/amnezia-box"
+          sed -n "/^cat > \"\$INIT\" <<'EOF'\$/,/^EOF\$/p" install-openwrt.sh | sed '1d;$d' > "$W/files/etc/init.d/amnezia-box"
+          [ -s "$W/files/etc/init.d/amnezia-box" ] || { echo "init-скрипт не извлечён" >&2; exit 1; }
+          chmod 0755 "$W/files/etc/init.d/amnezia-box"
+          echo "/etc/amnezia-box/" > "$W/files/lib/upgrade/keep.d/amnezia-box"
+          printf '#!/bin/sh\n[ -n "${IPKG_INSTROOT:-}" ] && exit 0\n/etc/init.d/amnezia-box enable >/dev/null 2>&1\nexit 0\n' > "$W/post-install"
+          printf '#!/bin/sh\n[ -n "${IPKG_INSTROOT:-}" ] && exit 0\n/etc/init.d/amnezia-box stop >/dev/null 2>&1\n/etc/init.d/amnezia-box disable >/dev/null 2>&1\nexit 0\n' > "$W/pre-deinstall"
+          chmod 0755 "$W/post-install" "$W/pre-deinstall"
+          # apk-tools 3 (команда apk mkpkg) берём из alpine:edge
+          docker run --rm -v "$W:/w" -e APKV="$APKV" alpine:edge sh -euc '
+            apk add --no-cache apk-tools >/dev/null
+            apk --version
+            apk mkpkg \
+              -I name:amnezia-box -I "version:$APKV" -I arch:noarch \
+              -I "description:sing-box with AmneziaWG (static build for OpenWrt routers)" \
+              -I license:GPL-3.0-or-later -I origin:amnezia-box -I depends:ca-bundle \
+              -s post-install:/w/post-install -s pre-deinstall:/w/pre-deinstall \
+              -F /w/files -o /w/out.apk
+          '
+          cp "$W/out.apk" "dist/amnezia-box_${APKV}_${{ matrix.arch }}.apk"
+          ls -lh dist/*.apk
+
       - uses: actions/upload-artifact@v4
         with:
           name: amnezia-box-${{ matrix.ref }}-${{ matrix.arch }}
