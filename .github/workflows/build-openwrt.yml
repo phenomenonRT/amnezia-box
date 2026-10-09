@@ -1,0 +1,106 @@
+# Сборка amnezia-box (sing-box + AmneziaWG) под OpenWrt.
+# Положите файл в .github/workflows/ своего репозитория (не форка hoaxisr),
+# запустите вручную: Actions → build-openwrt → Run workflow.
+# Бинарники статические (CGO=0), без зависимостей от libc: работают на любой OpenWrt (musl).
+name: build-openwrt
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "Репозиторий с исходниками"
+        default: "hoaxisr/amnezia-box"
+        required: true
+      source_ref:
+        description: "Ветка или тег исходников (например awg-1.14.1)"
+        default: "awg-1.14.1"
+        required: true
+      release_tag:
+        description: "Тег релиза в этом репозитории (например 1.14.1-awg)"
+        required: true
+      upx:
+        description: "Дополнительно собрать сжатые UPX-версии (-upx)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # name — суффикс файла; install-openwrt.sh выбирает его по DISTRIB_ARCH
+          - { name: mipsel,  goarch: mipsle, gomips: softfloat }  # mipsel_24kc, mipsel_74kc, mipsel_mips32
+          - { name: mips,    goarch: mips,   gomips: softfloat }  # mips_24kc, mips_4kec, mips_mips32
+          - { name: arm64,   goarch: arm64 }                      # aarch64_*
+          - { name: armv7,   goarch: arm,    goarm: "7" }         # arm_cortex-a5/a7/a8/a9/a15
+          - { name: armv5,   goarch: arm,    goarm: "5" }         # arm_arm926ej-s, arm_xscale, arm_mpcore…
+          - { name: amd64,   goarch: amd64 }                      # x86_64
+          - { name: "386",   goarch: "386",  go386: softfloat }   # i386_*
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          ref: ${{ inputs.source_ref }}
+          path: src
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+
+      - name: Build
+        working-directory: src
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.release_tag }}"
+          TAGS="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_awg,with_low_memory"
+          echo "Build tags: $TAGS"
+          export CGO_ENABLED=0 GOOS=linux GOARCH="${{ matrix.goarch }}"
+          [ -n "${{ matrix.gomips }}" ] && export GOMIPS="${{ matrix.gomips }}"
+          [ -n "${{ matrix.goarm }}" ]  && export GOARM="${{ matrix.goarm }}"
+          [ -n "${{ matrix.go386 }}" ]  && export GO386="${{ matrix.go386 }}"
+          mkdir -p ../dist
+          OUT="../dist/amnezia-box-linux-${{ matrix.name }}"
+          go build -trimpath -tags "$TAGS" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$VERSION' $(cat release/LDFLAGS) -s -w -buildid=" \
+            -o "$OUT" ./cmd/sing-box
+          file "$OUT"; ls -lh "$OUT"
+
+      - name: UPX (необязательно)
+        if: ${{ inputs.upx }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends upx-ucl
+          cp dist/amnezia-box-linux-${{ matrix.name }} dist/amnezia-box-linux-${{ matrix.name }}-upx
+          upx -9 --lzma dist/amnezia-box-linux-${{ matrix.name }}-upx || rm -f dist/amnezia-box-linux-${{ matrix.name }}-upx
+
+      - name: Checksums
+        working-directory: dist
+        run: for f in amnezia-box-linux-*; do case "$f" in *.sha256) ;; *) sha256sum "$f" > "$f.sha256";; esac; done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amnezia-box-${{ matrix.name }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          NOTES="amnezia-box (sing-box + AWG), статические сборки для OpenWrt. Исходники: ${{ inputs.source_repo }}@${{ inputs.source_ref }}"
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "$NOTES" --latest \
+            || gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
