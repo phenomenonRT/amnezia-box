@@ -1,8 +1,8 @@
-# Сборка amnezia-box (sing-box + AmneziaWG) под OpenWrt.
-# Версия берётся из исходников: по умолчанию — последний релиз репозитория-источника,
-# тег релиза здесь совпадает с ним. Запуск: вручную или раз в сутки по расписанию
-# (если релиз с таким тегом уже есть — сборка пропускается).
-# Бинарники статические (CGO=0), без зависимостей от libc: работают на любой OpenWrt (musl).
+# Сборка amnezia-box (sing-box + AmneziaWG) под роутеры на OpenWrt.
+# Версии берутся из исходников: по умолчанию — последний релиз репозитория-источника;
+# можно указать несколько тегов через запятую (например, 1.15.0-alpha.6-awgm.24,1.15.0-alpha.6-awgm.25).
+# Тег релиза здесь совпадает с тегом исходников. Если релиз с таким тегом уже есть, версия пропускается.
+# Бинарники статические (CGO=0), без зависимостей от libc: работают на OpenWrt 24.10 и 25.x.
 name: build-openwrt
 
 on:
@@ -14,7 +14,7 @@ on:
         description: "Репозиторий с исходниками"
         default: "hoaxisr/amnezia-box"
       source_ref:
-        description: "Ветка или тег исходников (пусто = последний релиз источника)"
+        description: "Тег или ветка исходников, можно несколько через запятую (пусто = последний релиз)"
         default: ""
       force:
         description: "Пересобрать, даже если релиз с таким тегом уже есть"
@@ -33,7 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       repo: ${{ steps.r.outputs.repo }}
-      ref: ${{ steps.r.outputs.ref }}
+      refs: ${{ steps.r.outputs.refs }}
+      latest: ${{ steps.r.outputs.latest }}
       skip: ${{ steps.r.outputs.skip }}
     steps:
       - id: r
@@ -45,16 +46,22 @@ jobs:
         run: |
           set -euo pipefail
           REPO="${IN_REPO:-hoaxisr/amnezia-box}"
-          REF="${IN_REF:-}"
-          if [ -z "$REF" ]; then
-            REF="$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
-            [ -n "$REF" ] || REF="$(gh api "repos/$REPO/releases?per_page=1" --jq '.[0].tag_name')"
-          fi
-          [ -n "$REF" ] && [ "$REF" != null ] || { echo "Не удалось определить версию исходников в $REPO" >&2; exit 1; }
-          SKIP=false
-          if [ "$FORCE" != true ] && gh release view "$REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then SKIP=true; fi
-          echo "Источник: $REPO @ $REF (пропуск: $SKIP)"
-          { echo "repo=$REPO"; echo "ref=$REF"; echo "skip=$SKIP"; } >> "$GITHUB_OUTPUT"
+          LATEST="$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          [ -n "$LATEST" ] || LATEST="$(gh api "repos/$REPO/releases?per_page=1" --jq '.[0].tag_name')"
+          [ -n "$LATEST" ] && [ "$LATEST" != null ] || { echo "Не удалось определить последний релиз $REPO" >&2; exit 1; }
+          LIST="$(printf '%s' "${IN_REF:-}" | tr -d ' ')"
+          [ -n "$LIST" ] || LIST="$LATEST"
+          TODO=()
+          for ref in ${LIST//,/ }; do
+            if [ "$FORCE" != true ] && gh release view "$ref" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Пропуск $ref: релиз уже есть"
+            else
+              TODO+=("$ref")
+            fi
+          done
+          if [ "${#TODO[@]}" -eq 0 ]; then JSON='[]'; SKIP=true; else JSON="$(printf '%s\n' "${TODO[@]}" | jq -R . | jq -sc .)"; SKIP=false; fi
+          echo "Источник: $REPO, к сборке: $JSON, последний: $LATEST"
+          { echo "repo=$REPO"; echo "refs=$JSON"; echo "latest=$LATEST"; echo "skip=$SKIP"; } >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -63,20 +70,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        ref: ${{ fromJSON(needs.prepare.outputs.refs) }}
+        arch: [mipsel, mips, arm64, armv7, armv5]
         include:
-          # name — суффикс файла; install-openwrt.sh выбирает его по DISTRIB_ARCH
-          - { name: mipsel,  goarch: mipsle, gomips: softfloat }  # mipsel_24kc, mipsel_74kc, mipsel_mips32
-          - { name: mips,    goarch: mips,   gomips: softfloat }  # mips_24kc, mips_4kec, mips_mips32
-          - { name: arm64,   goarch: arm64 }                      # aarch64_*
-          - { name: armv7,   goarch: arm,    goarm: "7" }         # arm_cortex-a5/a7/a8/a9/a15
-          - { name: armv5,   goarch: arm,    goarm: "5" }         # arm_arm926ej-s, arm_xscale, arm_mpcore…
-          - { name: amd64,   goarch: amd64 }                      # x86_64
-          - { name: "386",   goarch: "386",  go386: softfloat }   # i386_*
+          # arch — суффикс файла; install-openwrt.sh выбирает его по DISTRIB_ARCH
+          - { arch: mipsel, goarch: mipsle, gomips: softfloat }  # mipsel_24kc, mipsel_74kc, mipsel_mips32
+          - { arch: mips,   goarch: mips,   gomips: softfloat }  # mips_24kc, mips_4kec, mips_mips32
+          - { arch: arm64,  goarch: arm64 }                      # aarch64_*
+          - { arch: armv7,  goarch: arm,    goarm: "7" }         # arm_cortex-a5/a7/a8/a9/a15
+          - { arch: armv5,  goarch: arm,    goarm: "5" }         # arm_arm926ej-s, arm_xscale, arm_mpcore…
     steps:
       - uses: actions/checkout@v4
         with:
           repository: ${{ needs.prepare.outputs.repo }}
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ matrix.ref }}
           path: src
 
       - uses: actions/setup-go@v5
@@ -87,15 +94,14 @@ jobs:
         working-directory: src
         run: |
           set -euo pipefail
-          VERSION="${{ needs.prepare.outputs.ref }}"
+          VERSION="${{ matrix.ref }}"
           TAGS="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_awg,with_low_memory"
           echo "Build tags: $TAGS"
           export CGO_ENABLED=0 GOOS=linux GOARCH="${{ matrix.goarch }}"
           [ -n "${{ matrix.gomips }}" ] && export GOMIPS="${{ matrix.gomips }}"
           [ -n "${{ matrix.goarm }}" ]  && export GOARM="${{ matrix.goarm }}"
-          [ -n "${{ matrix.go386 }}" ]  && export GO386="${{ matrix.go386 }}"
           mkdir -p ../dist
-          OUT="../dist/amnezia-box-linux-${{ matrix.name }}"
+          OUT="../dist/amnezia-box-linux-${{ matrix.arch }}"
           go build -trimpath -tags "$TAGS" \
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$VERSION' $(cat release/LDFLAGS) -s -w -buildid=" \
             -o "$OUT" ./cmd/sing-box
@@ -106,33 +112,36 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y --no-install-recommends upx-ucl
-          cp dist/amnezia-box-linux-${{ matrix.name }} dist/amnezia-box-linux-${{ matrix.name }}-upx
-          upx -9 --lzma dist/amnezia-box-linux-${{ matrix.name }}-upx || rm -f dist/amnezia-box-linux-${{ matrix.name }}-upx
-
-      - name: Checksums
-        working-directory: dist
-        run: for f in amnezia-box-linux-*; do case "$f" in *.sha256) ;; *) sha256sum "$f" > "$f.sha256";; esac; done
+          cp dist/amnezia-box-linux-${{ matrix.arch }} dist/amnezia-box-linux-${{ matrix.arch }}-upx
+          upx -9 --lzma dist/amnezia-box-linux-${{ matrix.arch }}-upx || rm -f dist/amnezia-box-linux-${{ matrix.arch }}-upx
 
       - uses: actions/upload-artifact@v4
         with:
-          name: amnezia-box-${{ matrix.name }}
+          name: amnezia-box-${{ matrix.ref }}-${{ matrix.arch }}
           path: dist/*
 
   release:
     needs: [prepare, build]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(needs.prepare.outputs.refs) }}
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: amnezia-box-${{ matrix.ref }}-*
           path: dist
           merge-multiple: true
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.ref }}
+          TAG: ${{ matrix.ref }}
           SRC: ${{ needs.prepare.outputs.repo }}
+          LATEST: ${{ needs.prepare.outputs.latest }}
         run: |
           set -euo pipefail
-          NOTES="amnezia-box (sing-box + AWG), статические сборки для OpenWrt. Исходники: $SRC@$TAG"
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "$NOTES" --latest \
+          NOTES="amnezia-box (sing-box + AWG), статические сборки для роутеров на OpenWrt. Исходники: $SRC@$TAG"
+          IS_LATEST=false; [ "$TAG" = "$LATEST" ] && IS_LATEST=true
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "$NOTES" --latest="$IS_LATEST" \
             || gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber

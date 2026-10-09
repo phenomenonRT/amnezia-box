@@ -50,8 +50,7 @@ case "$OWRT_ARCH" in
   aarch64_*|aarch64)                GRP=arm64 ;;
   arm_cortex-a5*|arm_cortex-a7*|arm_cortex-a8*|arm_cortex-a9*|arm_cortex-a15*|armv7*) GRP=armv7 ;;
   arm_*|armv6*|armv5*)              GRP=armv5 ;;
-  x86_64)                           GRP=amd64 ;;
-  i386_*|i686|i586)                 GRP=386 ;;
+  x86_64|i386_*|i686|i586)          die "x86 не собирается (только роутеры на MIPS/ARM): $OWRT_ARCH" ;;
   *) die "неизвестная архитектура: $OWRT_ARCH" ;;
 esac
 say "OpenWrt ${DISTRIB_RELEASE:-?}, архитектура $OWRT_ARCH → сборка linux-$GRP"
@@ -66,12 +65,12 @@ else
   ASSET="$NAME-linux-$GRP"
   [ "${UPX:-0}" = 1 ] && ASSET="$ASSET-upx"
   if [ -n "${BIN_URL:-}" ]; then
-    URL="$BIN_URL"; SUM_URL=""
+    URL="$BIN_URL"
   else
     [ -n "$REPO" ] || die "укажите REPO, BIN_URL или путь к файлу"
     BASE="${BASE_URL:-https://github.com}/$REPO/releases"
     if [ -n "${VERSION:-}" ]; then P="$BASE/download/$VERSION"; else P="$BASE/latest/download"; fi
-    URL="$P/$ASSET"; SUM_URL="$P/$ASSET.sha256"
+    URL="$P/$ASSET"
   fi
   if   have curl;         then dl() { curl -fsSL -o "$2" "$1"; }
   elif have uclient-fetch; then dl() { uclient-fetch -q -O "$2" "$1"; }
@@ -79,13 +78,6 @@ else
   else die "нет curl / uclient-fetch / wget"; fi
   say "Скачиваю $URL"
   dl "$URL" "$TMP/$NAME" || die "не удалось скачать (для HTTPS нужны ca-bundle и libustream-*; проверьте REPO/VERSION, при блокировке GitHub задайте BASE_URL)"
-  if [ -n "$SUM_URL" ] && dl "$SUM_URL" "$TMP/sum" 2>/dev/null; then
-    want="$(cut -d' ' -f1 "$TMP/sum")"; got="$(sha256sum "$TMP/$NAME" | cut -d' ' -f1)"
-    [ "$want" = "$got" ] || die "контрольная сумма не совпала"
-    say "SHA256 совпадает"
-  else
-    say "Предупреждение: .sha256 не получен, проверка пропущена"
-  fi
 fi
 chmod +x "$TMP/$NAME"
 
