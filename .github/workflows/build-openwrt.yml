@@ -80,6 +80,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          sparse-checkout: install-openwrt.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/checkout@v4
+        with:
           repository: ${{ needs.prepare.outputs.repo }}
           ref: ${{ matrix.ref }}
           path: src
@@ -118,6 +123,42 @@ jobs:
             echo "::warning::UPX не справился для ${{ matrix.arch }}, основной файл остаётся несжатым"
             cp "$A-plain" "$A"
           fi
+
+      - name: IPK (для LuCI «Загрузить пакет» и opkg)
+        run: |
+          set -euo pipefail
+          VER="${{ matrix.ref }}"
+          A="amnezia-box-linux-${{ matrix.arch }}"
+          W="$(mktemp -d)"
+          mkdir -p "$W/data/usr/bin" "$W/data/etc/init.d" "$W/data/lib/upgrade/keep.d" "$W/control"
+          install -m 0755 "dist/$A" "$W/data/usr/bin/amnezia-box"
+          # init-скрипт берём из install-openwrt.sh (одна копия на оба способа установки)
+          sed -n "/^cat > \"\$INIT\" <<'EOF'\$/,/^EOF\$/p" install-openwrt.sh | sed '1d;$d' > "$W/data/etc/init.d/amnezia-box"
+          [ -s "$W/data/etc/init.d/amnezia-box" ] || { echo "init-скрипт не извлечён" >&2; exit 1; }
+          chmod 0755 "$W/data/etc/init.d/amnezia-box"
+          echo "/etc/amnezia-box/" > "$W/data/lib/upgrade/keep.d/amnezia-box"
+          SIZE="$(du -sb "$W/data" | cut -f1)"
+          cat > "$W/control/control" <<CTL
+          Package: amnezia-box
+          Version: $VER
+          Depends: ca-bundle
+          Source: ${{ needs.prepare.outputs.repo }}
+          SourceName: amnezia-box
+          License: GPL-3.0-or-later
+          Section: net
+          Architecture: all
+          Installed-Size: $SIZE
+          Description: sing-box with AmneziaWG (static build for OpenWrt routers, ${{ matrix.arch }})
+          CTL
+          printf '#!/bin/sh\n[ "${IPKG_NO_SCRIPT}" = "1" ] && exit 0\n[ -s ${IPKG_INSTROOT}/lib/functions.sh ] || exit 0\n. ${IPKG_INSTROOT}/lib/functions.sh\ndefault_postinst $0 $@\n' > "$W/control/postinst"
+          printf '#!/bin/sh\n[ -s ${IPKG_INSTROOT}/lib/functions.sh ] || exit 0\n. ${IPKG_INSTROOT}/lib/functions.sh\ndefault_prerm $0 $@\n' > "$W/control/prerm"
+          chmod 0755 "$W/control/postinst" "$W/control/prerm"
+          echo 2.0 > "$W/debian-binary"
+          T="--numeric-owner --owner=0 --group=0"
+          ( cd "$W/data" && tar $T -czf ../data.tar.gz . )
+          ( cd "$W/control" && tar $T -czf ../control.tar.gz . )
+          ( cd "$W" && tar $T -czf "$GITHUB_WORKSPACE/dist/amnezia-box_${VER}_${{ matrix.arch }}.ipk" ./debian-binary ./data.tar.gz ./control.tar.gz )
+          tar -tzf "dist/amnezia-box_${VER}_${{ matrix.arch }}.ipk"; ls -lh dist/*.ipk
 
       - uses: actions/upload-artifact@v4
         with:
