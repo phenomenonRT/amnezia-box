@@ -1,7 +1,8 @@
 # Сборка amnezia-box (sing-box + AmneziaWG) под роутеры на OpenWrt.
-# Версии берутся из исходников: по умолчанию — последний релиз репозитория-источника;
-# можно указать несколько тегов через запятую (например, 1.15.0-alpha.6-awgm.24,1.15.0-alpha.6-awgm.25).
-# Тег релиза здесь совпадает с тегом исходников. Если релиз с таким тегом уже есть, версия пропускается.
+# Каждые 8 часов проверяется репозиторий-источник: берутся 3 последних его релиза (по номеру awgm.N);
+# те, которых здесь ещё нет, собираются и публикуются с тем же тегом. Остальное пропускается.
+# После каждого запуска здесь остаются только 3 последних релиза, более старые удаляются вместе с тегами.
+# Вручную можно указать свои теги через запятую (например, 1.15.0-alpha.6-awgm.24,1.15.0-alpha.6-awgm.25).
 # Бинарники статические (CGO=0), без зависимостей от libc: работают на OpenWrt 24.10 и 25.x.
 # Основной файл amnezia-box-linux-<arch> сжат UPX (-9 --lzma), как в rndnaame/awg-compressed;
 # рядом лежит несжатый amnezia-box-linux-<arch>-plain (меньше ОЗУ при запуске).
@@ -16,7 +17,7 @@ on:
         description: "Репозиторий с исходниками"
         default: "hoaxisr/amnezia-box"
       source_ref:
-        description: "Тег или ветка исходников, можно несколько через запятую (пусто = последний релиз)"
+        description: "Тег или ветка исходников, можно несколько через запятую (пусто = 3 последних релиза источника)"
         default: ""
       force:
         description: "Пересобрать, даже если релиз с таким тегом уже есть"
@@ -44,11 +45,17 @@ jobs:
         run: |
           set -euo pipefail
           REPO="${IN_REPO:-hoaxisr/amnezia-box}"
-          LATEST="$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
-          [ -n "$LATEST" ] || LATEST="$(gh api "repos/$REPO/releases?per_page=1" --jq '.[0].tag_name')"
-          [ -n "$LATEST" ] && [ "$LATEST" != null ] || { echo "Не удалось определить последний релиз $REPO" >&2; exit 1; }
+          KEEP=3
+          # релизы источника с номером awgm.N, самые новые первыми (по номеру)
+          RAW="$(gh api "repos/$REPO/releases?per_page=50" --jq '.[] | select(.draft | not) | .tag_name')"
+          ALL="$(printf '%s\n' "$RAW" | { grep -E 'awgm\.[0-9]+$' || true; } \
+            | awk '{n=$0; sub(/.*awgm\./,"",n); print n" "$0}' | sort -rn | cut -d' ' -f2-)"
+          LATEST="$(printf '%s\n' "$ALL" | head -n1)"
           LIST="$(printf '%s' "${IN_REF:-}" | tr -d ' ')"
-          [ -n "$LIST" ] || LIST="$LATEST"
+          if [ -z "$LIST" ]; then
+            [ -n "$ALL" ] || { echo "В $REPO нет релизов с тегом ...awgm.N" >&2; exit 1; }
+            LIST="$(printf '%s\n' "$ALL" | head -n "$KEEP" | paste -sd, -)"
+          fi
           TODO=()
           for ref in ${LIST//,/ }; do
             if [ "$FORCE" != true ] && gh release view "$ref" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -205,6 +212,8 @@ jobs:
 
   release:
     needs: [prepare, build]
+    # публикуем то, что собралось, даже если часть версий упала
+    if: ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -212,6 +221,7 @@ jobs:
         ref: ${{ fromJSON(needs.prepare.outputs.refs) }}
     steps:
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: amnezia-box-${{ matrix.ref }}-*
           path: dist
@@ -224,7 +234,39 @@ jobs:
           LATEST: ${{ needs.prepare.outputs.latest }}
         run: |
           set -euo pipefail
+          mkdir -p dist
+          MISSING=""
+          for a in mipsel mips arm64 armv7 armv5; do
+            [ -s "dist/amnezia-box-linux-$a" ] || MISSING="$MISSING $a"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::warning::$TAG не опубликован: нет сборок для:$MISSING"
+            exit 0
+          fi
           NOTES="amnezia-box (sing-box + AWG), статические сборки для роутеров на OpenWrt. Исходники: $SRC@$TAG"
           IS_LATEST=false; [ "$TAG" = "$LATEST" ] && IS_LATEST=true
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "$NOTES" --latest="$IS_LATEST" \
             || gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  cleanup:
+    needs: [prepare, release]
+    # запускается и когда собирать было нечего
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Оставить только 3 последних релиза
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "3"
+        run: |
+          set -euo pipefail
+          TAGS="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName')"
+          [ -n "$TAGS" ] || exit 0
+          # порядок — по номеру awgm.N (новые первыми); теги без номера считаются самыми старыми
+          SORTED="$(printf '%s\n' "$TAGS" | awk '{n=$0; if (n ~ /awgm\.[0-9]+$/) sub(/.*awgm\./,"",n); else n=0; print n" "$0}' | sort -rn | cut -d' ' -f2-)"
+          printf '%s\n' "$SORTED" | tail -n +"$((KEEP+1))" | while read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "Удаляю старый релиз $tag"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          done
+          echo "Остались:"; printf '%s\n' "$SORTED" | head -n "$KEEP"
