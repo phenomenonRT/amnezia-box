@@ -131,6 +131,28 @@ jobs:
             cp "$A-plain" "$A"
           fi
 
+      - name: Lite (без acme, cloudflared, v2ray_api — заметно меньше)
+        continue-on-error: true   # неудача не мешает основным файлам попасть в релиз
+        run: |
+          set -euo pipefail
+          VERSION="${{ matrix.ref }}"
+          TAGS="$(cat src/release/DEFAULT_BUILD_TAGS_OTHERS),with_awg,with_low_memory"
+          TAGS="$(printf '%s' "$TAGS" | tr ',' '\n' | grep -vxE 'with_acme|with_cloudflared|with_v2ray_api' | paste -sd, -)"
+          echo "Lite tags: $TAGS"
+          export CGO_ENABLED=0 GOOS=linux GOARCH="${{ matrix.goarch }}"
+          [ -n "${{ matrix.gomips }}" ] && export GOMIPS="${{ matrix.gomips }}"
+          [ -n "${{ matrix.goarm }}" ]  && export GOARM="${{ matrix.goarm }}"
+          A="amnezia-box-linux-${{ matrix.arch }}-lite"
+          ( cd src && go build -trimpath -tags "$TAGS" \
+              -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$VERSION' $(cat release/LDFLAGS) -s -w -buildid=" \
+              -o "../dist/$A" ./cmd/sing-box )
+          ls -lh "dist/$A"
+          if timeout 1200 upx -9 --lzma "dist/$A" && upx -t "dist/$A"; then
+            ls -lh "dist/$A"
+          else
+            echo "::warning::UPX не справился для lite ${{ matrix.arch }}"; rm -f "dist/$A"
+          fi
+
       - name: IPK (для LuCI «Загрузить пакет» и opkg)
         run: |
           set -euo pipefail
